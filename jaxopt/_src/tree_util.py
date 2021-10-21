@@ -78,6 +78,11 @@ def tree_zeros_like(tree_x):
   return tree_map(jnp.zeros_like, tree_x)
 
 
+def tree_ones_like(tree_x):
+  """Creates an all-ones tree with the same structure as tree_x."""
+  return tree_map(jnp.ones_like, tree_x)
+
+
 def tree_average(trees, weights):
   """Return the linear combination of a list of trees.
 
@@ -103,3 +108,26 @@ def tree_gram(a):
   vmap_left = jax.vmap(tree_vdot, in_axes=(0,None))
   vmap_right = jax.vmap(vmap_left, in_axes=(None,0))
   return vmap_right(a, a)
+
+
+def tree_norm_inf(v):
+  leaf_norm_inf = tree_map(lambda l: jnp.max(jnp.abs(l)), v)
+  return tree_reduce(jnp.maximum, leaf_norm_inf)
+
+
+def tree_where(cond, a, b):
+  """jnp.where for for trees. Mimic broadcasting semantic of jnp.where."""
+  la = len(tree_leaves(a))
+  lb = len(tree_leaves(b))
+  lc = len(tree_leaves(cond))
+  if la > 1 and lb > 1:
+    return tree_map(lambda c,u,v: jnp.where(c, u, v), cond, a, b)
+  if la > 1 and lb == 1:
+    return tree_map(lambda c,u: jnp.where(c, u, b), cond, a)
+  if la == 1 and lb > 1:
+    return tree_map(lambda c,v: jnp.where(c, a, v), cond, b)
+  return tree_map(lambda c: jnp.where(c, a, b), cond)
+
+
+def tree_neg(tree):
+  return tree_scalar_mul(-1, tree)
