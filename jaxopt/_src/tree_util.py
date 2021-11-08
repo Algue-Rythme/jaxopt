@@ -33,6 +33,7 @@ tree_unflatten = tu.tree_unflatten
 tree_add = functools.partial(tree_multimap, operator.add)
 tree_sub = functools.partial(tree_multimap, operator.sub)
 tree_mul = functools.partial(tree_multimap, operator.mul)
+tree_div = functools.partial(tree_multimap, operator.truediv)
 
 
 def tree_scalar_mul(scalar, tree_x):
@@ -110,9 +111,10 @@ def tree_gram(a):
   return vmap_right(a, a)
 
 
-def tree_norm_inf(v):
-  leaf_norm_inf = tree_map(lambda l: jnp.max(jnp.abs(l)), v)
-  return tree_reduce(jnp.maximum, leaf_norm_inf)
+def tree_inf_norm(v):
+  """Compute infinity norm of pytree."""
+  leaf_inf_norm = tree_map(lambda l: jnp.max(jnp.abs(l)), v)
+  return tree_reduce(jnp.maximum, leaf_inf_norm)
 
 
 def tree_where(cond, a, b):
@@ -129,5 +131,17 @@ def tree_where(cond, a, b):
   return tree_map(lambda c: jnp.where(c, a, b), cond)
 
 
-def tree_neg(tree):
+def tree_negative(tree):
+  """Computes elementwise negation -x."""
   return tree_scalar_mul(-1, tree)
+
+
+def tree_reciproqual(tree):
+  """Computes elementwise inverse 1/x."""
+  return tree_map(lambda x: 1/x, tree)
+
+
+def tree_mean(tree):
+  """Mean reduction for trees."""
+  leaves_avg = tree_map(jnp.mean, tree)
+  return tree_sum(leaves_avg) / len(tree_leaves(leaves_avg))

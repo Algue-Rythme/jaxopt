@@ -31,39 +31,30 @@ from jaxopt._src.osqp import OSQP
 from jaxopt import QuadraticProgramming
 
 
-#TODO(lbethune): utility for debuging, remove ?
-def _print_jacob(solve_run_var, var, eps):
-  zeros = jnp.zeros_like(var).ravel()
-  for idx in range(var.size):
-    dir = jnp.reshape(zeros.at[idx].set(1.), var.shape)
-    delta = solve_run_var(var + eps*dir)-solve_run_P(var - eps*dir)
-    deriv = delta / (2*eps)
-    print(deriv)
-  print(jax.jacrev(solve_run_var)(var))
-
-
 def get_random_osqp_problem(problem_size, eq_constraints, ineq_constraints):
-  assert problem_size >= eq_constraints  # very likely to be unfeasible
-  P = onp.random.randn(problem_size, problem_size)
-  P = P.T.dot(P)  # PSD matrix
-  q = onp.random.randn(problem_size)
+  assert problem_size >= eq_constraints  # very likely to be infeasible
+  onp.random.seed(problem_size + eq_constraints + ineq_constraints)
+  Q = onp.random.randn(problem_size, problem_size)
+  Q = Q.T.dot(Q)  # PSD matrix
+  c = onp.random.randn(problem_size)
   A = onp.random.randn(ineq_constraints + eq_constraints, problem_size)
   l = onp.random.randn(ineq_constraints)
   u = l + jnp.abs(onp.random.randn(ineq_constraints))  # l < u
   b = onp.random.randn(eq_constraints)  # Ax = b
   l = jnp.concatenate([l, b])
   u = jnp.concatenate([u, b])
-  return (P, q), A, (l, u)
+  return (Q, c), A, (l, u)
 
 
-def _from_osqp_form_to_default_form(P, q, A, l, u):
+def _from_osqp_form_to_default_form(Q, c, A, l, u):
+  """Return form used by QuadraticProgramming from OSQP form (support only matrices)."""
   is_eq = l == u
   is_ineq_l = jnp.logical_and(l != u, l != -jnp.inf)
   is_ineq_u = jnp.logical_and(l != u, u != jnp.inf)
   if jnp.any(is_eq):
     A_eq, b = A[is_eq,:], l[is_eq]
   else:
-    A_eq, b = jnp.zeros((1,len(q))), jnp.zeros((1,))
+    A_eq, b = jnp.zeros((1,len(c))), jnp.zeros((1,))
   if jnp.any(is_ineq_l) and jnp.any(is_ineq_u):
     G = jnp.concatenate([-A[is_ineq_l,:],A[is_ineq_u,:]])
     h = jnp.concatenate([-l[is_ineq_l],u[is_ineq_u]])
@@ -72,8 +63,8 @@ def _from_osqp_form_to_default_form(P, q, A, l, u):
   elif jnp.any(is_ineq_u):
     G, h = A[is_ineq_u,:], u[is_ineq_u]
   else:
-    return (P, q), (A_eq, b), None
-  return (P, q), (A_eq, b), (G, h)
+    return (Q, c), (A_eq, b), None
+  return (Q, c), (A_eq, b), (G, h)
 
 
 class OSQPTest(jtu.JaxTestCase):
@@ -87,11 +78,10 @@ class OSQPTest(jtu.JaxTestCase):
     params_obj, params_eq, params_ineq = get_random_osqp_problem(problem_size, eq_constraints, ineq_constraints)
     tol = 1e-5
     osqp = OSQP(tol=tol)
-    init_params = osqp.init_params(params_obj, params_eq, params_ineq)
-    params, state = osqp.run(init_params, params_obj, params_eq, params_ineq)
+    params, state = osqp.run(None, params_obj, params_eq, params_ineq)
     self.assertLessEqual(state.error, tol)
     opt_error = osqp.l2_optimality_error(params, params_obj, params_eq, params_ineq)
-    self.assertAllClose(opt_error, 0.0, atol=1e-3)
+    self.assertAllClose(opt_error, 0.0, atol=1e-4)
 
     def test_against_cvxpy(params_obj):
       (Q, c), Ab, Gh = _from_osqp_form_to_default_form(params_obj[0], params_obj[1],
@@ -107,9 +97,9 @@ class OSQPTest(jtu.JaxTestCase):
     self.assertArraysAllClose(params.primal[0], cvx_primal, atol=atol)
 
     def osqp_run(params_obj):
-      P, q = params_obj
-      P = 0.5 * (P + P.T)
-      sol = osqp.run(init_params, (P, q), params_eq, params_ineq).params
+      Q, c = params_obj
+      P = 0.5 * (Q + Q.T)
+      sol = osqp.run(None, (Q, c), params_eq, params_ineq).params
       return sol.primal[0]
 
     jacosqp = jax.jacrev(osqp_run)(params_obj)
@@ -117,10 +107,10 @@ class OSQPTest(jtu.JaxTestCase):
     self.assertArraysAllClose(jacosqp[0], jaccvxpy[0], atol=5e-2)
     self.assertArraysAllClose(jacosqp[1], jaccvxpy[1], atol=5e-2)
 
-  @parameterized.product(derivative_with_respect_to=[["none", "obj", "eq", "ineq"]])
+  @parameterized.product(derivative_with_respect_to=["none", "obj", "eq", "ineq"])
   def test_qp_eq_and_ineq(self, derivative_with_respect_to):
-    P = 2 * jnp.array([[2.0, 0.5], [0.5, 1]])
-    q = jnp.array([1.0, 1.0])
+    Q = 2 * jnp.array([[2.0, 0.5], [0.5, 1]])
+    c = jnp.array([1.0, 1.0])
     A_eq = jnp.array([[1.0, 1.0]])
     b = jnp.array([1.0])
     G = jnp.array([[-1.0, 0.0], [0.0, -1.0]])
@@ -129,24 +119,23 @@ class OSQPTest(jtu.JaxTestCase):
     osqp = OSQP(tol=tol, verbose=0)
 
     @jax.jit
-    def osqp_run(P, q, A_eq, G, b, h):
+    def osqp_run(Q, c, A_eq, G, b, h):
       l = jnp.concatenate([b, jnp.full(h.shape, -jnp.inf)])
       u = jnp.concatenate([b, jnp.full(h.shape, h)])
-      P = 0.5 * (P + P.T) # we need to ensure that P is symmetric even after directional perturbations
+      Q = 0.5 * (Q + Q.T) # we need to ensure that P is symmetric even after directional perturbations
       A = jnp.concatenate([A_eq, G], axis=0)
-      init_params = osqp.init_params((P, q), A, (l, u))
-      return osqp.run(init_params, (P, q), A, (l, u))
+      return osqp.run(None, (Q, c), A, (l, u))
 
-    atol = 1e-3
-    eps = 1e-3
+    atol = 1e-2
+    eps = 1e-4
 
-    if "none" in derivative_with_respect_to:
-      params, state = osqp_run(P, q, A_eq, G, b, h)
+    if "none" == derivative_with_respect_to:
+      params, state = osqp_run(Q, c, A_eq, G, b, h)
       self.assertLessEqual(state.error, tol)
       assert state.status == OSQP.SOLVED
 
       qp = QuadraticProgramming()
-      hyperparams_qp = dict(params_obj=(P, q), params_eq=(A_eq, b), params_ineq=(G, h))
+      hyperparams_qp = dict(params_obj=(Q, c), params_eq=(A_eq, b), params_ineq=(G, h))
       params_qp, state = qp.run(**hyperparams_qp)
       self.assertArraysAllClose(params.primal[0], params_qp.primal, atol=atol)
 
@@ -155,22 +144,22 @@ class OSQPTest(jtu.JaxTestCase):
       mu, phi = params.dual_ineq
       return KKTSolution(params.primal, params.dual_eq, (mu[b_idx:], phi[b_idx:]))
 
-    if "obj" in derivative_with_respect_to:
-      solve_run_q = lambda q: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
-      check_grads(solve_run_q, args=(q,), order=1, modes=['rev'], eps=eps, atol=atol)
-      solve_run_P = lambda P: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
-      check_grads(solve_run_P, args=(P,), order=1, modes=['rev'], eps=eps, atol=atol)
+    if "obj" == derivative_with_respect_to:
+      solve_run_c = lambda c: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
+      check_grads(solve_run_c, args=(c,), order=1, modes=['rev'], eps=eps, atol=atol)
+      solve_run_Q = lambda Q: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
+      check_grads(solve_run_Q, args=(Q,), order=1, modes=['rev'], eps=eps, atol=atol)
 
-    if "eq" in derivative_with_respect_to:
-      solve_run_A_eq = lambda A_eq: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
+    if "eq" == derivative_with_respect_to:
+      solve_run_A_eq = lambda A_eq: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
       check_grads(solve_run_A_eq, args=(A_eq,), order=1, modes=['rev'], eps=eps, atol=atol)
-      solve_run_b = lambda b: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
+      solve_run_b = lambda b: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
       check_grads(solve_run_b, args=(b,), order=1, modes=['rev'], eps=eps, atol=atol)
 
-    if "ineq" in derivative_with_respect_to:
-      solve_run_G = lambda G: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
+    if "ineq" == derivative_with_respect_to:
+      solve_run_G = lambda G: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
       check_grads(solve_run_G, args=(G,), order=1, modes=['rev'], eps=eps, atol=atol)
-      solve_run_h = lambda h: keep_ineq_only(osqp_run(P, q, A_eq, G, b, h).params)
+      solve_run_h = lambda h: keep_ineq_only(osqp_run(Q, c, A_eq, G, b, h).params)
       check_grads(solve_run_h, args=(h,), order=1, modes=['rev'], eps=eps, atol=atol)
 
   def test_projection_hyperplane(self):
@@ -180,13 +169,12 @@ class OSQPTest(jtu.JaxTestCase):
     q = -x
     # Find ||y-x||^2 such that jnp.dot(y, a) = b.
 
-    matvec_P = lambda params_P,u: u
+    matvec_Q = lambda params_Q,u: u
     matvec_A = lambda params_A,u: jnp.dot(a, u).reshape(1)
 
     tol = 1e-4
-    osqp = OSQP(matvec_P=matvec_P, matvec_A=matvec_A, tol=tol, verbose=0)
-    init_params = osqp.init_params((None, q), None, (b, b))
-    sol, state = osqp.run(init_params, (None, q), None, (b, b))
+    osqp = OSQP(matvec_Q=matvec_Q, matvec_A=matvec_A, tol=tol, verbose=0)
+    sol, state = osqp.run(None, (None, q), None, (b, b))
 
     assert state.status == OSQP.SOLVED
     self.assertLessEqual(state.error, tol)
@@ -199,7 +187,7 @@ class OSQPTest(jtu.JaxTestCase):
   def test_projection_simplex(self):
     @jax.jit
     def _projection_simplex_qp(x, s=1.0):
-      P = jnp.eye(len(x))
+      Q = jnp.eye(len(x))
       A_eq = jnp.array([jnp.ones_like(x)])
       b = jnp.array([s])
       G = -jnp.eye(len(x))
@@ -207,12 +195,11 @@ class OSQPTest(jtu.JaxTestCase):
       A = jnp.concatenate([A_eq, G])
       l = jnp.concatenate([b, jnp.full(h.shape, -jnp.inf)])
       u = jnp.concatenate([b, h])
-      hyperparams = dict(params_obj=(P, -x), params_eq=A,
+      hyperparams = dict(params_obj=(Q, -x), params_eq=A,
                          params_ineq=(l, u))
 
       osqp = OSQP(tol=1e-5)
-      init_params = osqp.init_params(**hyperparams)
-      return osqp.run(init_params, **hyperparams).params.primal[0]
+      return osqp.run(None, **hyperparams).params.primal[0]
 
     atol = 1e-3
 
@@ -228,19 +215,19 @@ class OSQPTest(jtu.JaxTestCase):
 
   def test_eq_constrained_qp_with_pytrees(self):
     rng = onp.random.RandomState(0)
-    P = rng.randn(7, 7)
-    P = onp.dot(P, P.T)
+    Q = rng.randn(7, 7)
+    Q = onp.dot(Q, Q.T)
     A = rng.randn(4, 7)
 
     tmp = rng.randn(7)
     # Must have the same pytree structure as the output of matvec_P.
-    q = {'foo':tmp[:3], 'bar':tmp[3:]}
+    c = {'foo':tmp[:3], 'bar':tmp[3:]}
     # Must have the same pytree structure as the output of matvec_A.
     b = [[rng.randn(1)] for _ in range(4)]
 
-    def matvec_P(P, dic):
+    def matvec_Q(Q, dic):
       x_ = jnp.concatenate([dic['foo'], dic['bar']])
-      res = jnp.dot(P, x_)
+      res = jnp.dot(Q, x_)
       return {'foo':res[:3], 'bar':res[3:]}
 
     def matvec_A(A, dic):
@@ -253,12 +240,11 @@ class OSQPTest(jtu.JaxTestCase):
     atol = 1e-4
 
     # With pytrees directly.
-    hyperparams = dict(params_obj=(P, q), params_eq=A, params_ineq=(b, b))
-    osqp = OSQP(matvec_P=matvec_P, matvec_A=matvec_A, tol=tol)
-    # sol.primal has the same pytree structure as the output of matvec_P.
+    hyperparams = dict(params_obj=(Q, c), params_eq=A, params_ineq=(b, b))
+    osqp = OSQP(matvec_Q=matvec_Q, matvec_A=matvec_A, tol=tol)
+    # sol.primal has the same pytree structure as the output of matvec_Q.
     # sol.dual_eq has the same pytree structure as the output of matvec_A.
-    init_params = osqp.init_params(**hyperparams)
-    sol_pytree, state = osqp.run(init_params, **hyperparams)
+    sol_pytree, state = osqp.run(None, **hyperparams)
     assert state.status == OSQP.SOLVED
     self.assertAllClose(osqp.l2_optimality_error(sol_pytree, **hyperparams), 0.0, atol=atol)
 
@@ -266,12 +252,11 @@ class OSQPTest(jtu.JaxTestCase):
     flat_z = lambda z: jnp.concatenate([zi[0] for zi in z])
 
     # With flattened pytrees.
-    q_flat = flat_x(q)
+    c_flat = flat_x(c)
     b_flat = flat_z(b)
-    hyperparams = dict(params_obj=(P, q_flat), params_eq=A, params_ineq=(b_flat, b_flat))
+    hyperparams = dict(params_obj=(Q, c_flat), params_eq=A, params_ineq=(b_flat, b_flat))
     osqp = OSQP(tol=tol)
-    init_params = osqp.init_params(**hyperparams)
-    sol = osqp.run(init_params, **hyperparams).params
+    sol = osqp.run(None, **hyperparams).params
     self.assertAllClose(osqp.l2_optimality_error(sol, **hyperparams), 0.0, atol=atol)
 
     # Check that the solutions match.
@@ -279,9 +264,9 @@ class OSQPTest(jtu.JaxTestCase):
     self.assertArraysAllClose(flat_z(sol_pytree.primal[1]), sol.primal[1], atol=atol)
     self.assertArraysAllClose(flat_z(sol_pytree.dual_eq), sol.dual_eq, atol=atol)
 
-  @parameterized.product(kernel=['linear','rbf'], size=[(50, 8), (400, 20)])
-  def test_binary_kernel_svm(self, kernel, size):
-    n_samples, n_features = size
+  @parameterized.product(kernel=['linear','rbf'])
+  def test_binary_kernel_svm(self, kernel):
+    n_samples, n_features = 50, 8
     n_informative = (3*n_features) // 4
     # Prepare data.
     X, y = datasets.make_classification(n_samples=n_samples, n_features=n_features,
@@ -310,13 +295,12 @@ class OSQPTest(jtu.JaxTestCase):
     l = -jax.nn.relu(-y * C), 0.
     u =  jax.nn.relu( y * C), 0.
     hyper_params = dict(params_obj=(K, -y), params_eq=None, params_ineq=(l, u))
-    tol = 1e-2 if n_samples > 100 else 1e-5
+    tol = 1e-5
     osqp = OSQP(matvec_A=matvec_A, tol=tol)
 
-    sol = osqp.init_params(**hyper_params)
-    sol, state = osqp.run(sol, **hyper_params)
+    sol, state = osqp.run(None, **hyper_params)
     self.assertLessEqual(state.error, tol)
-    atol = 0.5 if n_samples > 100 else 1e-2
+    atol = 1e-3
     opt_error = osqp.l2_optimality_error(sol, **hyper_params)
     self.assertAllClose(opt_error, 0.0, atol=atol)
 
@@ -329,7 +313,7 @@ class OSQPTest(jtu.JaxTestCase):
     beta_fit_skl = binary_kernel_svm_skl(K, y)
     # we solve the dual problem with OSQP so the dual of svm.SVC
     # corresponds to the primal variables of OSQP solution.
-    self.assertAllClose(sol.primal[0], beta_fit_skl, atol=5e-2)
+    self.assertAllClose(sol.primal[0], beta_fit_skl, atol=1e-2)
 
   def test_infeasible_polyhedron(self):
     # argmin_p \|p - x\|_2 = argmin_p <p,Ip> - 2<x,p> = argmin_p 0.5pIp - <x,p>
@@ -354,8 +338,7 @@ class OSQPTest(jtu.JaxTestCase):
     I = jnp.eye(len(x))
     hyper_params = dict(params_obj=(I, -x), params_eq=None, params_ineq=(l, u))
     osqp = OSQP(matvec_A=matvec_A, check_primal_dual_infeasability=True, tol=1e-5)
-    init_params = osqp.init_params(**hyper_params)
-    sol, state = osqp.run(init_params, **hyper_params)
+    sol, state = osqp.run(None, **hyper_params)
     assert state.status in [OSQP.PRIMAL_INFEASIBLE, OSQP.DUAL_INFEASIBLE]
 
   def test_infeasible_primal_only(self):
@@ -364,18 +347,17 @@ class OSQPTest(jtu.JaxTestCase):
     #          x2 >= 6
     #     x1 + x2 <= 11
     # This QP is primal infeasible.
-    P = jnp.zeros((2,2))
-    q = jnp.array([1.,1.])
+    Q = jnp.zeros((2,2))
+    c = jnp.array([1.,1.])
 
     def matvec_A(_, x):
       return x[0], x[1], x[0] + x[1]
     l = 6., 6., -jnp.inf
     u = jnp.inf, jnp.inf, 11.
     
-    hyper_params = dict(params_obj=(P, q), params_eq=None, params_ineq=(l, u))
+    hyper_params = dict(params_obj=(Q, c), params_eq=None, params_ineq=(l, u))
     osqp = OSQP(matvec_A=matvec_A, check_primal_dual_infeasability=True)
-    init_params = osqp.init_params(**hyper_params)
-    sol, state = osqp.run(init_params, **hyper_params)
+    sol, state = osqp.run(None, **hyper_params)
     assert state.status == OSQP.PRIMAL_INFEASIBLE
 
   def test_unbounded_primal(self):
@@ -388,17 +370,140 @@ class OSQPTest(jtu.JaxTestCase):
     l = 0., 1.
     u = jnp.inf, 1.
 
-    def matvec_P(_,x):
+    def matvec_Q(_,x):
       return 0., 0., 0.
 
     hyper_params = dict(params_obj=(None, (-1., -2., 1.)), params_eq=None, params_ineq=(l, u))
-    osqp = OSQP(matvec_P=matvec_P, matvec_A=matvec_A,
+    osqp = OSQP(matvec_Q=matvec_Q, matvec_A=matvec_A,
                 check_primal_dual_infeasability=True,
-                tol=1e-3,
-                eq_qp_solve_tol=1e-8)  # seems necessary for dual infeasability detection
-    init_params = osqp.init_params(x0=(5., -3., 0.02), **hyper_params)
+                tol=1e-3)
+    init_params = osqp.init_params(init_x=(5., -3., 0.02), **hyper_params)
     sol, state = osqp.run(init_params, **hyper_params)
     assert state.status == OSQP.DUAL_INFEASIBLE
+
+  def test_jacobi_preconditioner(self):
+    # Portfolio optimization
+    # Problems of the form
+    #     max_x mu^Tx - gamma x Cov x
+    #     under sum_i x_i  = 1
+    #                 x_i >= 0
+    # with Cov = F@F.T + D the risk model, F @ F.T low rank, and D diagonal
+    # mu the expected return
+    onp.random.seed(0)
+    assets, factors = 10, 3
+    gamma = 1
+    F = onp.random.randn(assets, factors) 
+    D = jnp.diag(onp.random.uniform(0., factors ** 0.5, assets))
+    Cov = 2*gamma*(F @ F.T + D)   # minimize risk
+    mu = onp.random.randn(assets)   # maximize gain
+
+    A = jnp.concatenate([jnp.ones((1, assets)), jnp.eye(assets)], axis=0)
+    l = jnp.concatenate([jnp.array([1.]), jnp.zeros(assets)])
+    u = jnp.concatenate([jnp.array([1.]), jnp.full(assets, jnp.inf)])
+
+    tol = 1e-5
+    atol = 1e-3
+
+    hyper_params = dict(params_obj=(Cov, mu), params_eq=A, params_ineq=(l, u))
+    osqp = OSQP(tol=tol, eq_qp_preconditioner='jacobi')
+    sol, state = osqp.run(None, **hyper_params)
+    self.assertLessEqual(state.error, tol)
+    assert state.status == OSQP.SOLVED
+    opt_error = osqp.l2_optimality_error(sol, **hyper_params)
+    self.assertAllClose(opt_error, 0.0, atol=atol)
+
+    # Default preconditioner: Identity
+    # Jacobi preconditioner J should be better.
+    # We can check this heuristically with:
+    #    || M@P@x - x ||_2 where preconditioner P approximates M^{-1}
+    # Error for Default preconditioner:    M@x   - x
+    # Error for Jacobi preconditioner:     M@J@x - x
+    # The error of Jacobi is expected to be lower.
+    sigma = 1e-6
+    J = osqp._eq_qp_preconditioner_impl
+    x = sol.primal[0]
+    for rho_bar in [1e-4, 0.001, 0.01, 0.1, 1., 10., 100., 1000, 1e4]:
+      params_precond = J.init_params_precond(Cov, A, sigma, rho_bar)
+      M = Cov + sigma * jnp.eye(assets) + rho_bar * A.T @ A
+      approx_x = M @ J(params_precond, x)
+      diff = jnp.sum((approx_x - x)**2)**0.5
+      no_precond_approx = M @ x
+      no_precond_diff = jnp.sum((no_precond_approx - x)**2)**0.5
+      self.assertLessEqual(diff, no_precond_diff)
+
+  def test_lasso(self):
+    # Objective:
+    #     min ||data @ x - targets||_2^2 + 2 * n * lam ||x||_1
+    #
+    # Converted in QP:
+    #
+    #     min y^Ty + 2*n*lam 1^T t
+    #     under y = data @ x - targets
+    #          -t <= x <= t
+    #
+    # With OSQP formulation:
+    #
+    #     min y^Ty + 2*n*lam 1^T t
+    #     under       targets = data @ x - y
+    #           0         <= x + t <= infinity
+    #           -infinity <= x - t <= 0
+    #
+    # Note that we use 2n corrective factor in objective to
+    # optimize same objective as ProximalGradient.
+    n = 10
+    data, targets = datasets.make_regression(n_samples=n, n_features=3, random_state=0)
+    lam = 10.0
+
+    def matvec_Q(_, xyt):
+      x, y, t = xyt
+      return jnp.zeros_like(x), 2 * y, jnp.zeros_like(t)
+    
+    c = jnp.zeros(data.shape[1]), jnp.zeros(data.shape[0]), 2*n*lam * jnp.ones(data.shape[1])
+
+    def matvec_A(data, xyt):
+      x, y, t = xyt
+      residuals = data @ x - y
+      return residuals, x + t, x - t
+
+    l = targets, jnp.zeros_like(c[0]), jnp.full(data.shape[1], -jnp.inf)
+    u = targets, jnp.full(data.shape[1], jnp.inf), jnp.zeros_like(c[0])
+
+    tol = 1e-4
+    atol = 1e-2
+
+    hyper_params = dict(params_obj=(None, c), params_eq=data, params_ineq=(l, u))
+    osqp = OSQP(matvec_Q=matvec_Q, matvec_A=matvec_A, tol=tol)
+    sol, state = osqp.run(None, **hyper_params)
+    self.assertLessEqual(state.error, tol)
+    assert state.status == OSQP.SOLVED
+    opt_error = osqp.l2_optimality_error(sol, **hyper_params)
+    self.assertAllClose(opt_error, 0.0, atol=atol)
+
+    # Verify with Proximal Gradient
+
+    def run_osqp(data):
+      hyper_params = dict(params_obj=(None, c), params_eq=data, params_ineq=(l, u))
+      sol, state = osqp.run(None, **hyper_params)
+      return sol.primal[0][0]
+
+    from jaxopt import objective
+    from jaxopt import prox
+    from jaxopt import ProximalGradient
+
+    fun = objective.least_squares
+    w_init = jnp.zeros(data.shape[1])
+    pg = ProximalGradient(fun=fun, prox=prox.prox_lasso, maxiter=400, tol=tol,
+                          acceleration=True)
+    def run_prox(data):
+      w_fit, info = pg.run(w_init, hyperparams_prox=lam, data=(data, targets))
+      return w_fit
+
+    w_fit = run_prox(data)
+    self.assertArraysAllClose(sol.primal[0][0], w_fit, atol=atol)
+
+    jac_osqp = jax.jacrev(run_osqp)(data)
+    jac_prox = jax.jacrev(run_prox)(data)
+    self.assertArraysAllClose(jac_osqp, jac_prox, atol=1e-2)
 
 
 if __name__ == '__main__':
