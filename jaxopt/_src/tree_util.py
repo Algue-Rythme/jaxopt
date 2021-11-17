@@ -118,7 +118,7 @@ def tree_inf_norm(v):
 
 
 def tree_where(cond, a, b):
-  """jnp.where for for trees. Mimic broadcasting semantic of jnp.where."""
+  """jnp.where for trees. Mimic broadcasting semantic of jnp.where."""
   la = len(tree_leaves(a))
   lb = len(tree_leaves(b))
   lc = len(tree_leaves(cond))

@@ -17,6 +17,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import numpy as onp
+from jax.experimental import sparse
 
 from jaxopt.tree_util import tree_map, tree_sum, tree_mul
 
@@ -64,10 +65,10 @@ class SparseLinearOperator:
     return self.matvec(x)
 
   def matvec(self, x):
-    return tree_map(jnp.dot, self.weights, x)
+    return tree_map(sparse.sparsify(jnp.dot), self.weights, x)
 
   def rmatvec(self, _, y):
-    return tree_map(jnp.dot, self.weights.T, y)
+    return tree_map(sparse.sparsify(jnp.dot), self.weights.T, y)
 
   def matvec_and_rmatvec(self, x, y):
     return self.matvec(x), self.rmatvec(x, y)

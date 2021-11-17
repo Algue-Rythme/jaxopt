@@ -540,7 +540,7 @@ class OSQPTest(jtu.JaxTestCase):
     opt_error = osqp.l2_optimality_error(sol, **hyper_params)
     self.assertAllClose(opt_error, 0.0, atol=atol)
 
-  def test_hubert_pytree_sparsity(self):
+  def test_huber_pytree_sparsity(self):
     """Test support for pytrees of Sparse matrices on Huber fitting."""
     # Solve problems of the form
     #    min sum_i H(z_i^T x - b_i)
@@ -579,7 +579,7 @@ class OSQPTest(jtu.JaxTestCase):
     atol = 1e-2
 
     hyper_params = dict(params_obj=(Q, c), params_eq=A, params_ineq=(l, u))
-    osqp = OSQP(tol=tol)
+    osqp = OSQP(matvec_Q='sparse', matvec_A='sparse', tol=tol)
     osqp.run(None, **hyper_params)
 
     

@@ -19,6 +19,7 @@ from typing import Callable
 from typing import NamedTuple
 from typing import Optional
 from typing import Tuple
+from typing import Union
 
 from dataclasses import dataclass
 from functools import partial
@@ -35,7 +36,7 @@ from jaxopt._src.tree_util import tree_scalar_mul, tree_add_scalar_mul, tree_mea
 from jaxopt._src.tree_util import tree_map, tree_vdot, tree_l2_norm, tree_inf_norm
 from jaxopt._src.tree_util import tree_ones_like, tree_zeros_like, tree_where
 from jaxopt._src.tree_util import tree_reciproqual, tree_negative
-from jaxopt._src.linear_operator import DenseLinearOperator, FunctionalLinearOperator
+from jaxopt._src.linear_operator import DenseLinearOperator, FunctionalLinearOperator, SparseLinearOperator
 from jaxopt._src.linear_solve import solve_cg
 from jaxopt._src.quadratic_prog import _matvec_and_rmatvec
 from jaxopt.projection import projection_box
@@ -113,6 +114,8 @@ class OSQPState(NamedTuple):
 def _make_linear_operator(matvec):
   if matvec is None:
     return DenseLinearOperator
+  elif matvec == 'sparse':
+    return SparseLinearOperator
   else:
     return partial(FunctionalLinearOperator, matvec)
 
@@ -260,8 +263,8 @@ class OSQP(base.IterativeSolver):
   GPU acceleration of ADMM for large-scale quadratic programming.
   Journal of Parallel and Distributed Computing, 144, pp.55-67.
   """
-  matvec_Q: Optional[Callable] = None
-  matvec_A: Optional[Callable] = None
+  matvec_Q: Union[Optional[Callable], str] = None
+  matvec_A: Union[Optional[Callable], str] = None
   check_primal_dual_infeasability: base.AutoOrBoolean = "auto"
   sigma: float = 1e-6
   momentum: float = 1.6
