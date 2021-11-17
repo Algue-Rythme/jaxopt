@@ -387,7 +387,7 @@ class OSQP(base.IterativeSolver):
 
     # infeasible dual implies either infeasible primal, either unbounded primal.
     return jax.lax.cond(certif_dual_infeasible,
-      lambda _: (0., OSQP.DUAL_INFEASIBLE),  # dual unfeasible; exit the main loop with error = 0.
+      lambda _: (0., OSQP.DUAL_INFEASIBLE),  # dual infeasible; exit the main loop with error = 0.
       lambda _: (error, status),
       operand=None)
 

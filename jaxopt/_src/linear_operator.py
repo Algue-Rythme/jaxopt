@@ -65,10 +65,14 @@ class SparseLinearOperator:
     return self.matvec(x)
 
   def matvec(self, x):
-    return tree_map(sparse.sparsify(jnp.dot), self.weights, x)
+    def is_leaf(leaf):
+      return isinstance(leaf, sparse.BCOO)
+    return tree_map(sparse.sparsify(jnp.dot), self.weights, x, is_leaf=is_leaf)
 
   def rmatvec(self, _, y):
-    return tree_map(sparse.sparsify(jnp.dot), self.weights.T, y)
+    def is_leaf(leaf):
+      return isinstance(leaf, sparse.BCOO)
+    return tree_map(lambda w,yi: sparse.sparsify(jnp.dot)(w.T,yi), self.weights, x, is_leaf=is_leaf)
 
   def matvec_and_rmatvec(self, x, y):
     return self.matvec(x), self.rmatvec(x, y)
