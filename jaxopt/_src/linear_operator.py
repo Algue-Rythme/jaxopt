@@ -55,6 +55,40 @@ class DenseLinearOperator:
     return tree_map(col_norm, self.weights)
 
 
+class SparseLinearOperator:
+
+  def __init__(self, weights):
+    self.weights = weights
+
+  def __call__(self, x):
+    return self.matvec(x)
+
+  def matvec(self, x):
+    return tree_map(jnp.dot, self.weights, x)
+
+  def rmatvec(self, _, y):
+    return tree_map(jnp.dot, self.weights.T, y)
+
+  def matvec_and_rmatvec(self, x, y):
+    return self.matvec(x), self.rmatvec(x, y)
+
+  def normal_matvec(self, x):
+    """Computes A^T A x from matvec(x) = A x, where A is square."""
+    return self.rmatvec(x, self.matvec(x))
+
+  def diag(self):
+    diags_only = tree_map(jnp.diag, self.weights)
+    return diags_only
+
+  def columns_l2_norms(self, squared=False):
+    def col_norm(w):
+      col_norms = jnp.sum(jnp.square(w), axis=0)
+      if not squared:
+        col_norms = jnp.sqrt(col_norms)
+      return col_norms
+    return tree_map(col_norm, self.weights)
+
+
 class FunctionalLinearOperator:
 
   def __init__(self, fun, params):

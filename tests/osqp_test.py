@@ -19,6 +19,7 @@ import jax
 from jax import test_util as jtu
 import jax.numpy as jnp
 from jax.test_util import check_grads
+from jax.experimental import sparse
 import numpy as onp
 
 from sklearn import datasets
@@ -504,6 +505,84 @@ class OSQPTest(jtu.JaxTestCase):
     jac_osqp = jax.jacrev(run_osqp)(data)
     jac_prox = jax.jacrev(run_prox)(data)
     self.assertArraysAllClose(jac_osqp, jac_prox, atol=1e-2)
+
+  def test_matvec_sparsity_support(self):
+    n = 50*1000
+    k = 1000  # 1% non zero entries
+    rng = onp.random.RandomState(0)
+    Q_data = rng.randn(k)
+    Q_indices = rng.choice(onp.arange(n), size=(k, 2))
+    Q = sparse.BCOO((Q_data, Q_indices), shape=(n,n))
+    A_data = jnp.ones(n)
+    A_indices = jnp.stack([jnp.arange(n),jnp.arange(n)],axis=1)
+    A = sparse.BCOO((A_data, A_indices), shape=(n,n))
+
+    def matvec_Q(Q, x):
+      # Apply (Q+Id)(Q^T+Id^T)
+      # This matrix is PSD and has non-zero diagonal 
+      y = Q.T @ x + x
+      return Q @ y + y
+
+    def matvec_A(A, x):
+      return A @ x
+
+    l = rng.randn(n)
+    u = l + jnp.abs(rng.randn(n))  # l < u
+
+    tol = 1e-5
+    atol = 1e-2
+
+    hyper_params = dict(params_obj=(Q, jnp.zeros(n)), params_eq=A, params_ineq=(l, u))
+    osqp = OSQP(matvec_Q=matvec_Q, matvec_A=matvec_A, tol=tol)
+    sol, state = osqp.run(None, **hyper_params)
+    self.assertLessEqual(state.error, tol)
+    assert state.status == OSQP.SOLVED
+    opt_error = osqp.l2_optimality_error(sol, **hyper_params)
+    self.assertAllClose(opt_error, 0.0, atol=atol)
+
+  def test_hubert_pytree_sparsity(self):
+    """Test support for pytrees of Sparse matrices on Huber fitting."""
+    # Solve problems of the form
+    #    min sum_i H(z_i^T x - b_i)
+    #
+    # where H is the Huber penalty function:
+    #   H(u) = u^2 when |u| <= M
+    #   H(u) = M(2|u| - M) otherwise
+    #
+    # Equivalent to QP:
+    #
+    #   min u^T u + 2M1^T(r + s)
+    #   under z_i^T x - b_i - u_i = r_i - s_i
+    #                          r >= 0
+    #                          s >= 0
+    #
+    # Which is a sparse QP.
+    n, k = 20, 5
+    M = 1.
+
+    zero_sparse_n = sparse.BCOO((None, None), shape=(n, n))
+    zero_sparse_k = sparse.BCOO((None, None), shape=(k, k))
+    Q = zero_sparse_n, sparse.BCOO.fromdense(jnp.eye(k)), zero_sparse_k, zero_sparse_k
+
+    c = jnp.zeros(n), jnp.zeros(k), 2 * 2 * M * jnp.ones(k), 2 * 2 * M * jnp.ones(k)
+
+    rng = onp.random.RandomState(0)
+    Z = rng.randn(k, n)
+    eye_sparse_k = sparse.BCOO.fromdense(jnp.eye(k))
+    A = Z, -eye_sparse_k, -eye_sparse_k, eye_sparse_k
+
+    b = rng.randn(k)
+    l = b, jnp.zeros(k), jnp.zeros(k)
+    u = b, jnp.full(k, jnp.inf), jnp.full(k, jnp.inf)
+
+    tol = 1e-5
+    atol = 1e-2
+
+    hyper_params = dict(params_obj=(Q, c), params_eq=A, params_ineq=(l, u))
+    osqp = OSQP(tol=tol)
+    osqp.run(None, **hyper_params)
+
+    
 
 
 if __name__ == '__main__':

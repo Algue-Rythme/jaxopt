@@ -225,6 +225,7 @@ class OSQP(base.IterativeSolver):
       momentum>1 => over-relaxation.
       Boyd [2, p21] suggests chosing momentum in [1.5, 1.8].
     eq_qp_preconditioner: (optional) a string specifying the pre-conditioner (default: None).
+      Only ``"jacobi"`` is available for now.
     eq_qp_solve_tol: tolerance for linear solver in equality constrained QP. (default: 1e-5)
       High tolerance may speedup each ADMM step but will slow down overall convergence. 
     eq_qp_solve_maxiter: number of iterations for linear solver in equality constrained QP. (default: None)
