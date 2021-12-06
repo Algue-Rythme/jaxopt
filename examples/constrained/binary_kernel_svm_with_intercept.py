@@ -15,16 +15,15 @@
 """
 Binary kernel SVM with intercept.
 =================================
-
 The dual objective of binary kernel SVMs with an intercept contains both
 box constraints and an equality constraint, making it challenging to solve.
 The state-of-the-art algorithm to solve this objective is SMO (Sequential
-minimal optimization). 
+minimal optimization).
 
 We nevertheless demonstrate in this example how to solve
 it by projected gradient descent, by projecting on the constraint set
-using projection_box_section.  
-  
+using projection_box_section.
+
 Since the dual objective is a Quadratic Program we show how to solve
 it with BoxOSQP too.
 """
@@ -109,7 +108,7 @@ def binary_kernel_svm_osqp(X, y, C):
 
   def matvec_Q(X, beta):
     return jnp.dot(X, jnp.dot(X.T,  beta))
-  
+
   # There qre two types of constraints:
   #   0 <= y_i * beta_i <= C     (1)
   # and:
@@ -120,7 +119,7 @@ def binary_kernel_svm_osqp(X, y, C):
   # We return a tuple whose entries correspond each type of constraint.
   def matvec_A(_, beta):
     return beta, jnp.sum(beta)
-  
+
   # l, u must have same shape than matvec_A's output.
   l = -jax.nn.relu(-y * C), 0.
   u =  jax.nn.relu( y * C), 0.
@@ -168,7 +167,7 @@ def main(argv):
 
   beta_fit_skl = binary_kernel_svm_skl(X, y, C)
   print_svm_result(beta_fit_skl)
-  
+
 
 if __name__ == "__main__":
   jax.config.update("jax_platform_name", "cpu")
