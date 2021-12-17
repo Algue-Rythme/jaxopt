@@ -29,14 +29,15 @@ from jax.tree_util import tree_reduce
 
 from jaxopt._src import base
 from jaxopt._src import implicit_diff as idf
-from jaxopt._src.tree_util import tree_add, tree_sub, tree_mul
+from jaxopt._src.tree_util import tree_add, tree_sub, tree_mul, tree_reciproqual
 from jaxopt._src.tree_util import tree_scalar_mul, tree_add_scalar_mul
-from jaxopt._src.tree_util import tree_map, tree_vdot, tree_dot
+from jaxopt._src.tree_util import tree_map, tree_vdot, tree_dot, tree_mean
 from jaxopt._src.tree_util import tree_ones_like, tree_zeros_like, tree_where
 from jaxopt._src.tree_util import tree_negative, tree_l2_norm, tree_inf_norm
 from jaxopt._src.linear_operator import DenseLinearOperator, _make_linear_operator
 import jaxopt.linear_solve as linear_solve
 from jaxopt.projection import projection_box
+import jaxopt.loop as loop
 
 
 def _make_osqp_optimality_fun(matvec_Q, matvec_A):
@@ -914,42 +915,57 @@ class RuizEquilibration:
   """Modified Ruiz equilibration to rescale OSQP."""
   ruiz_tol: float = 0.
   maxiter: int = 10
+  min_scaling: float = 1e-4
+  max_scaling: float = 1e4
 
-  def _update_D_E(self, abs_Q_bar, abs_A_bar, D, E):
+  def _update_D_E(self, Q_bar, A_bar, D, E):
+    abs_Q_bar          = tree_map(jnp.abs, Q_bar)
+    abs_A_bar          = tree_map(jnp.abs, A_bar)
     Q_bar_inf  = tree_map(lambda Qi: jnp.max(Qi, axis=1), abs_Q_bar)
     AT_bar_inf = tree_map(lambda Ai: jnp.max(Ai, axis=0), abs_A_bar)
     delta_D    = tree_map(jnp.maximum, Q_bar_inf, AT_bar_inf)
-    delta_E    = tree_map(lambda Ai: jnp.max(Ai, axis=1), abs_A_bar)
+    delta_D    = tree_where(delta_D == 0., 1., delta_D)
     delta_D    = tree_map(lambda d: 1/jnp.sqrt(d), delta_D)
+    delta_E    = tree_map(lambda Ai: jnp.max(Ai, axis=1), abs_A_bar)
+    delta_E    = tree_where(delta_E == 0., 1., delta_E)
     delta_E    = tree_map(lambda e: 1/jnp.sqrt(e), delta_E)
     D          = tree_mul(delta_D, D)
     E          = tree_mul(delta_E, E)
-    D          = tree_map(lambda d: jnp.clip(d, self.min_scaling, max_scaling), D)
-    E          = tree_map(lambda e: jnp.clip(e, self.min_scaling, max_scaling), E)
-    criterion  = tree_inf_norm(tree_sub(tree_ones_like(delta), delta))
+    D          = tree_map(lambda d: jnp.clip(d, self.min_scaling, self.max_scaling), D)
+    E          = tree_map(lambda e: jnp.clip(e, self.min_scaling, self.max_scaling), E)
+    criterion_D  = tree_inf_norm(tree_sub(tree_ones_like(delta_D), delta_D))
+    criterion_E  = tree_inf_norm(tree_sub(tree_ones_like(delta_E), delta_E))
+    criterion    = jnp.maximum(criterion_D, criterion_E)
+    print('Delta: ', delta_D, delta_E)
+    print('DE: ', D, E)
     return criterion, D, E
 
-  def _equilibrate_Q_c_A(self, abs_Q, c, abs_A, D, E):
-    abs_Q_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), D, abs_Q, D)
-    c_bar     = tree_mul(c, D)
-    abs_A_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), E, abs_A, D)
-    return abs_Q_bar, c_bar, abs_A_bar
+  def _equilibrate_Q_c_A(self, Q, c, A, D, E):
+    Q_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), D, Q, D)
+    c_bar = tree_mul(c, D)
+    A_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), E, A, D)
+    return Q_bar, c_bar, A_bar
 
-  def _rescale_cost(self, abs_Q_bar, c_bar, cost):
+  def _rescale_cost(self, Q_bar, c_bar, cost):
+    abs_Q_bar          = tree_map(jnp.abs, Q_bar)
     Q_row_inf_norm     = tree_map(lambda Qi: jnp.max(Qi, axis=1), abs_Q_bar)
     Q_row_inf_norm_avg = tree_mean(Q_row_inf_norm)
-    gamma     = 1 / jnp.maximum(Q_row_inf_norm_avg, tree_inf_norm(c_bar))
-    abs_Q_bar = tree_scalar_mul(gamma, abs_Q_bar)
+    print(1/Q_row_inf_norm_avg, 1/tree_inf_norm(c_bar))
+    inf_c_bar = tree_inf_norm(c_bar)
+    inf_c_bar = jnp.where(inf_c_bar == 0., 1., tree_inf_norm(c_bar))
+    gamma     = 1 / jnp.maximum(Q_row_inf_norm_avg, inf_c_bar)
+    print('BEFORE:',Q_bar)
+    Q_bar     = tree_scalar_mul(gamma, Q_bar)
     c_bar     = tree_scalar_mul(gamma, c_bar)
     cost      = gamma * cost
+    print('gamma', gamma)
+    print('AFTER:',Q_bar)
     return Q_bar, c_bar, cost
 
   def transform(self, params_obj, params_eq, params_ineq):
     Q     = params_obj[0]
-    abs_Q = tree_map(jnp.abs, Q)
     c     = params_obj[1]
     A     = params_eq
-    abs_A = tree_map(jnp.abs, A)
     D     = tree_ones_like(c)
     E     = tree_ones_like(params_ineq[0])
     delta = tree_zeros_like((D, E))
@@ -960,16 +976,14 @@ class RuizEquilibration:
     def body_fun(t):
       _, Q_bar, c_bar, A_bar, D, E, cost = t
       criterion, D, E = self._update_D_E(Q_bar, A_bar, D, E)
-      Q_bar, c_bar, A_bar = self._equilibrate_Q_c_A(D, E)
+      Q_bar, c_bar, A_bar = self._equilibrate_Q_c_A(Q, c, A, D, E)
       Q_bar, c_bar, cost = self._rescale_cost(Q_bar, c_bar, cost)
       return criterion, Q_bar, c_bar, A_bar, D, E, cost
 
-    init_val = jnp.inf, abs_Q, c, abs_A, D, E, 1
-    t = loop.while_loop(cond_fun, body_fun, init_val, maxiter=self.maxiter, unroll=False, jit=True)
-    _, _, c_bar, _, D, E, cost = t
+    init_val = jnp.inf, Q, c, A, D, E, 1
+    t = loop.while_loop(cond_fun, body_fun, init_val, maxiter=self.maxiter, unroll=True, jit=False)
+    _, Q_bar, c_bar, A_bar, D, E, cost = t
 
-    Q_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), D, Q, D)
-    A_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), E, A, D)
     l_bar = tree_mul(params_ineq[0], E)
     u_bar = tree_mul(params_ineq[1], E)
 
@@ -978,17 +992,16 @@ class RuizEquilibration:
 
     return hyper_params, scales
 
-  def invert_transform(scaled_kkt_solution, scales):
+  def invert_transform(self, scaled_kkt_solution, scales):
     x_bar, z_bar    = scaled_kkt_solution.primal
     y_bar           = scaled_kkt_solution.dual_eq
-    mu_bar, phi_bar = scaled_kkt_solution.dual_ineq
 
     D, E, cost = scales
     E_inv = tree_reciproqual(E)
 
     x = tree_mul(D, x_bar)
     z = tree_mul(E_inv, z_bar)
-    y_bar = tree_scalar_mul(1/cost, tree_mul(E, y))
+    y = tree_scalar_mul(1/cost, tree_mul(E, y_bar))
 
     unscaled_kkt_solution = BoxOSQP._get_full_KKT_solution((x, z), y)
     return unscaled_kkt_solution

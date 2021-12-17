@@ -512,6 +512,33 @@ class BoxOSQPTest(jtu.JaxTestCase):
     opt_error = osqp.l2_optimality_error(params, params_obj, params_eq, params_ineq)
     self.assertAllClose(opt_error, 0.0, atol=1e-2)
 
+  def test_ruiz_equilibration(self):
+    from jaxopt._src.osqp import RuizEquilibration
+    problem_size = 40
+    eq_constraints = 10
+    ineq_constraints = 10
+
+    (Q, c), A, (l, u) = get_random_osqp_problem(problem_size, eq_constraints, ineq_constraints)
+    Q = Q.T @ Q # badly scaled problem
+    c = 1e2 * c
+    vec = 1e-1 * onp.random.rand(A.shape[0], 1)
+    A = vec * A
+    u = vec[:,0] * u
+    l = vec[:,0] * l
+
+    params_obj, params_eq, params_ineq = (Q, c), A, (l, u)
+    ruiz = RuizEquilibration()
+    ruiz_hyperparams, scales = ruiz.transform((Q, c), params_eq, params_ineq)
+    tol = 1e-4
+    osqp = BoxOSQP(tol=tol)
+    ruiz_params, ruiz_state = osqp.run(None, **ruiz_hyperparams)
+    self.assertLessEqual(ruiz_state.error, tol)
+    ruiz_inverted_params = ruiz.invert_transform(ruiz_params, scales)
+    params = osqp.run(None, params_obj, params_eq, params_ineq).params
+    D, E, cost = scales
+    print(D, E, cost)
+    self.assertAllClose(params.primal[0], ruiz_inverted_params.primal[0], atol=1e-2, rtol=1e-2)
+
 
 class OSQPTest(jtu.JaxTestCase):
 
