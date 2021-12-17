@@ -940,10 +940,12 @@ class RuizEquilibration:
     print('DE: ', D, E)
     return criterion, D, E
 
-  def _equilibrate_Q_c_A(self, Q, c, A, D, E):
+  def _equilibrate_Q_c_A(self, Q, c, A, D, E, cost):
     Q_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), D, Q, D)
     c_bar = tree_mul(c, D)
     A_bar = tree_map(partial(jnp.einsum, 'i,ij,j->ij'), E, A, D)
+    Q_bar = tree_scalar_mul(cost, Q_bar)
+    c_bar = tree_scalar_mul(cost, c_bar)
     return Q_bar, c_bar, A_bar
 
   def _rescale_cost(self, Q_bar, c_bar, cost):
@@ -976,7 +978,7 @@ class RuizEquilibration:
     def body_fun(t):
       _, Q_bar, c_bar, A_bar, D, E, cost = t
       criterion, D, E = self._update_D_E(Q_bar, A_bar, D, E)
-      Q_bar, c_bar, A_bar = self._equilibrate_Q_c_A(Q, c, A, D, E)
+      Q_bar, c_bar, A_bar = self._equilibrate_Q_c_A(Q, c, A, D, E, cost)
       Q_bar, c_bar, cost = self._rescale_cost(Q_bar, c_bar, cost)
       return criterion, Q_bar, c_bar, A_bar, D, E, cost
 
