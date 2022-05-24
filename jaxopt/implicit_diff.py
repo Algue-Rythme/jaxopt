@@ -14,5 +14,6 @@
 
 from jaxopt._src.implicit_diff import custom_root
 from jaxopt._src.implicit_diff import custom_fixed_point
+from jaxopt._src.implicit_diff import make_kkt_optimality_fun
 from jaxopt._src.implicit_diff import root_jvp
 from jaxopt._src.implicit_diff import root_vjp
